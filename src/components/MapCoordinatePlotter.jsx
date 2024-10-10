@@ -1,10 +1,15 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useDropzone } from 'react-dropzone';
+import Papa from 'papaparse';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import 'leaflet/dist/leaflet.css';
 // Import icons from react-icons
 import { MdFullscreen, MdFullscreenExit } from 'react-icons/md';
@@ -20,6 +25,8 @@ const MapCoordinatePlotter = () => {
   const [error, setError] = useState('');
   const [zoomToCoordinate, setZoomToCoordinate] = useState(null);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [isPasteMode, setIsPasteMode] = useState(false);
+  const [csvText, setCsvText] = useState('');
 
   const validateCoordinates = (lat, lon) => {
     const floatLat = parseFloat(lat);
@@ -51,53 +58,66 @@ const MapCoordinatePlotter = () => {
   };
 
   const parseCSV = (text) => {
-    const lines = text.split('\n');
-    return lines.map(line => {
-      const values = [];
-      let insideQuote = false;
-      let currentValue = '';
-      for (let char of line) {
-        if (char === '"') {
-          insideQuote = !insideQuote;
-        } else if (char === ',' && !insideQuote) {
-          values.push(currentValue.trim());
-          currentValue = '';
-        } else {
-          currentValue += char;
+    return new Promise((resolve, reject) => {
+      Papa.parse(text, {
+        header: true,
+        dynamicTyping: true,
+        complete: (results) => {
+          resolve(results.data);
+        },
+        error: (error) => {
+          reject(error);
         }
-      }
-      values.push(currentValue.trim());
-      return values;
+      });
     });
+  };
+
+  const handleCsvTextChange = (e) => {
+    setCsvText(e.target.value);
+  };
+
+  const handlePastedCsv = async () => {
+    try {
+      const parsedData = await parseCSV(csvText);
+      processParsedCsv(parsedData);
+    } catch (error) {
+      setError('Error parsing CSV: ' + error.message);
+    }
+  };
+
+  const processParsedCsv = (parsedData) => {
+    if (parsedData.length > 0 && 'latitude' in parsedData[0] && 'longitude' in parsedData[0]) {
+      const newCoordinates = parsedData
+        .filter(row => validateCoordinates(row.latitude, row.longitude))
+        .map(row => ({
+          latitude: row.latitude,
+          longitude: row.longitude,
+          label: row.label || `${row.latitude}, ${row.longitude}`
+        }));
+      
+      setCoordinates(prevCoordinates => [...prevCoordinates, ...newCoordinates]);
+      setError('');
+      
+      // Zoom to the first coordinate of the newly added set
+      if (newCoordinates.length > 0) {
+        setZoomToCoordinate(newCoordinates[0]);
+      }
+    } else {
+      setError('CSV must contain "latitude" and "longitude" columns.');
+    }
   };
 
   const onDrop = useCallback((acceptedFiles) => {
     const file = acceptedFiles[0];
     if (file) {
       const reader = new FileReader();
-      reader.onload = (e) => {
+      reader.onload = async (e) => {
         const content = e.target.result;
-        const parsedCSV = parseCSV(content);
-        const headers = parsedCSV[0].map(header => header.toLowerCase());
-        
-        if (headers.includes('latitude') && headers.includes('longitude')) {
-          const newCoordinates = parsedCSV.slice(1).map(values => {
-            return {
-              latitude: parseFloat(values[headers.indexOf('latitude')]),
-              longitude: parseFloat(values[headers.indexOf('longitude')]),
-              label: values[headers.indexOf('label')] || `${values[headers.indexOf('latitude')]}, ${values[headers.indexOf('longitude')]}`
-            };
-          }).filter(coord => validateCoordinates(coord.latitude, coord.longitude));
-          
-          setCoordinates(prevCoordinates => [...prevCoordinates, ...newCoordinates]);
-          setError('');
-          
-          // Zoom to the first coordinate of the newly added set
-          if (newCoordinates.length > 0) {
-            setZoomToCoordinate(newCoordinates[0]);
-          }
-        } else {
-          setError('CSV file must contain "Latitude" and "Longitude" columns.');
+        try {
+          const parsedData = await parseCSV(content);
+          processParsedCsv(parsedData);
+        } catch (error) {
+          setError('Error parsing CSV file: ' + error.message);
         }
       };
       reader.readAsText(file);
@@ -165,15 +185,34 @@ const MapCoordinatePlotter = () => {
             />
             <Button onClick={addCoordinates} className="mb-2">Add Coordinates</Button>
             <Button onClick={clearCoordinates} variant="outline" className="mb-2">Clear All Coordinates</Button>
-            
-            <div {...getRootProps()} className="border-2 border-dashed border-gray-300 rounded-md p-4 text-center cursor-pointer hover:border-gray-400 transition-colors duration-200">
-              <input {...getInputProps()} />
-              {isDragActive ? (
-                <p>Drop the CSV file here...</p>
-              ) : (
-                <p>Drag &apos;n&apos; drop a CSV file here, or click to select a file</p>
-              )}
-            </div>
+
+            <Tabs defaultValue="drop" className="w-full">
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="drop">Upload CSV</TabsTrigger>
+                <TabsTrigger value="paste">Paste CSV</TabsTrigger>
+              </TabsList>
+              <TabsContent value="drop">
+                <div {...getRootProps()} className="border-2 border-dashed border-gray-300 rounded-md p-4 text-center cursor-pointer hover:border-gray-400 transition-colors duration-200">
+                  <input {...getInputProps()} />
+                  {isDragActive ? (
+                    <p>Drop the CSV file here...</p>
+                  ) : (
+                    <p>Drag &apos;n&apos; drop a CSV file here, or click to select a file</p>
+                  )}
+                </div>
+              </TabsContent>
+              <TabsContent value="paste">
+                <div className="space-y-2">
+                  <Textarea
+                    placeholder="Paste your CSV content here..."
+                    value={csvText}
+                    onChange={handleCsvTextChange}
+                    className="h-32"
+                  />
+                  <Button onClick={handlePastedCsv}>Process CSV</Button>
+                </div>
+              </TabsContent>
+            </Tabs>
             
             {error && (
               <Alert variant="destructive" className="mt-2">
